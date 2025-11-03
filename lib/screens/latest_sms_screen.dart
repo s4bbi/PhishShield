@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_sms_inbox/flutter_sms_inbox.dart';
+import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import 'details_screen.dart';
 import '../services/sms_utils.dart';
@@ -15,8 +17,12 @@ class LatestSmsScreen extends StatefulWidget {
 class _LatestSmsScreenState extends State<LatestSmsScreen> {
   final SmsQuery _smsQuery = SmsQuery();
   List<SmsMessage> _messages = [];
-  bool _firstLoad = true;
+  SmsMessage? _latestMessage;
+  bool _loading = true;
   Timer? _timer;
+
+  // Store spam probabilities keyed by SMS id
+  Map<int, double> _spamProbabilities = {};
 
   @override
   void initState() {
@@ -36,26 +42,25 @@ class _LatestSmsScreenState extends State<LatestSmsScreen> {
     await SmsUtils.requestDefaultSmsApp();
   }
 
-/// Fetch latest 5 messages initially
-Future<void> _loadInitialMessages() async {
-  var status = await Permission.sms.status;
-  if (!status.isGranted) {
-    status = await Permission.sms.request();
+  Future<void> _loadInitialMessages() async {
+    var status = await Permission.sms.status;
+    if (!status.isGranted) await Permission.sms.request();
+    if (!status.isGranted) return;
+
+    List<SmsMessage> messages = await _smsQuery.getAllSms;
+    messages.sort((a, b) => b.date!.compareTo(a.date!)); // latest first
+
+    if (messages.isNotEmpty) {
+      setState(() {
+        _messages = messages;
+        _latestMessage = messages.first;
+      });
+      _checkForSpam(messages.first);
+    }
+
+    setState(() => _loading = false);
   }
-  if (!status.isGranted) return;
 
-  List<SmsMessage> messages = await _smsQuery.getAllSms;
-  // Sort latest first
-  messages.sort((a, b) => a.date!.compareTo(b.date!));
-
-  setState(() {
-    _messages = messages.take(5).toList();
-    _firstLoad = false;
-  });
-}
-
-
-  /// Background fetch every 5 seconds (no loading spinner)
   void _startBackgroundFetch() {
     _timer = Timer.periodic(const Duration(seconds: 5), (_) async {
       var status = await Permission.sms.status;
@@ -64,15 +69,37 @@ Future<void> _loadInitialMessages() async {
       List<SmsMessage> messages = await _smsQuery.getAllSms;
       messages.sort((a, b) => b.date!.compareTo(a.date!));
 
-      // Add new messages at the top if they are not already in the list
-      setState(() {
-        for (var msg in messages) {
-          if (!_messages.any((m) => m.id == msg.id)) {
-            _messages.insert(0, msg);
-          }
-        }
-      });
+      if (messages.isNotEmpty && 
+          (_latestMessage == null || messages.first.id != _latestMessage!.id)) {
+        setState(() {
+          _messages.insert(0, messages.first);
+          _latestMessage = messages.first;
+        });
+        _checkForSpam(messages.first);
+      }
     });
+  }
+
+  /// Mock function to send SMS to server and receive spam probability
+  Future<void> _checkForSpam(SmsMessage msg) async {
+    try {
+      // Mock API call (replace with your actual endpoint later)
+      await Future.delayed(const Duration(seconds: 1));
+
+      // Simulated response (e.g., 0.0 = safe, 1.0 = spam)
+      final double probability = msg.body!.toLowerCase().contains("win")
+          ? 0.92
+          : msg.body!.toLowerCase().contains("offer")
+              ? 0.78
+              : 0.1;
+
+      setState(() {
+        _spamProbabilities[msg.id ?? DateTime.now().millisecondsSinceEpoch] =
+            probability;
+      });
+    } catch (e) {
+      debugPrint("Error sending SMS to server: $e");
+    }
   }
 
   @override
@@ -85,41 +112,36 @@ Future<void> _loadInitialMessages() async {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadInitialMessages,
-            tooltip: "Refresh",
           ),
         ],
       ),
-      body: _messages.isEmpty
-          ? const Center(
-              child: Text(
-                "No messages found",
-                style: TextStyle(color: Colors.grey, fontSize: 16),
-              ),
-            )
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
           : ListView.builder(
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final msg = _messages[index];
-                final dateDisplay =
-                    msg.date?.toLocal().toString().split(".")[0] ??
+                final id = msg.id ?? index;
+                final prob = _spamProbabilities[id];
+                final dateDisplay = msg.date
+                        ?.toLocal()
+                        .toString()
+                        .split(".")
+                        .first ??
                     "Unknown time";
 
-                // Only mark the first 5 messages loaded initially as "Latest"
-                final isLatestBadge = index < 5;
+                final bool isSpam = (prob ?? 0) > 0.5;
 
                 return Card(
-                  color: Colors.grey[850],
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
+                  color: isSpam ? Colors.red[900] : Colors.grey[850],
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                      borderRadius: BorderRadius.circular(12)),
                   child: ListTile(
-                    leading: const Icon(
+                    leading: Icon(
                       Icons.message_rounded,
-                      color: Colors.redAccent,
+                      color: isSpam ? Colors.yellowAccent : Colors.redAccent,
                       size: 30,
                     ),
                     title: Row(
@@ -128,27 +150,21 @@ Future<void> _loadInitialMessages() async {
                           child: Text(
                             msg.address ?? "Unknown Sender",
                             style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white),
                           ),
                         ),
-                        if (isLatestBadge)
+                        if (isSpam)
                           Container(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
+                                horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              color: Colors.redAccent,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Text(
-                              "Latest",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                              ),
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(6)),
+                            child: Text(
+                              "Spam ${(prob! * 100).toStringAsFixed(1)}%",
+                              style: const TextStyle(
+                                  color: Colors.redAccent, fontSize: 10),
                             ),
                           ),
                       ],
@@ -179,14 +195,14 @@ Future<void> _loadInitialMessages() async {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => DetailsScreen(
-                            details: {
-                              "sender": msg.address ?? "Unknown",
-                              "message": msg.body ?? "",
-                              "date": dateDisplay,
-                              "confidence": "—",
-                            },
-                          ),
+                          builder: (_) => DetailsScreen(details: {
+                            "sender": msg.address ?? "Unknown",
+                            "message": msg.body ?? "",
+                            "date": dateDisplay,
+                            "confidence": isSpam
+                                ? "${(prob! * 100).toStringAsFixed(1)}%"
+                                : "Safe",
+                          }),
                         ),
                       );
                     },
