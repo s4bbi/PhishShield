@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+
+// Screens
 import 'screens/home_screen.dart';
-import 'screens/detected_screen.dart';
-import 'screens/details_screen.dart';
+import 'screens/latest_sms_screen.dart';
 import 'screens/settings_screen.dart';
 
 void main() {
@@ -40,16 +41,17 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    HomeScreen(),
-    DetectedScreen(),
-    SettingsScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    // Bottom navigation screens
+    final List<Widget> screens = [
+      const HomeScreen(),
+      const LatestSmsScreen(), // Latest 5 messages will show here
+      const SettingsScreen(),
+    ];
+
     return Scaffold(
-      body: _screens[_currentIndex],
+      body: screens[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         backgroundColor: Colors.black,
